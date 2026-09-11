@@ -3,6 +3,14 @@ use std::convert::TryFrom;
 use std::io::Cursor;
 use std::prelude::v1::*;
 
+const REQUEST_TYPE: u8 = 0b00100001;
+const DFU_DNLOAD: u8 = 1;
+const DFU_UPLOAD: u8 = 2;
+const DFU_GETSTATUS: u8 = 3;
+const DFU_ABORT: u8 = 6;
+const STM32_DFU_CMD_SET_ADDRESS: u8 = 0x21;
+const STM32_DFU_FIRST_DATA_BLOCK: u16 = 2;
+
 struct Buffer<R: std::io::Read> {
     reader: R,
     buf: Box<[u8]>,
@@ -198,6 +206,84 @@ where
             .map_err(|_| Error::MaximumTransferSizeExceeded)?;
         reader.seek(std::io::SeekFrom::Start(0))?;
         self.download(reader, length)
+    }
+
+    /// Reads bytes from a DfuSe device at `address`.
+    ///
+    /// The requested range is read in the device's advertised transfer size.
+    /// The returned wrapper can be reused for subsequent DFU operations.
+    pub fn upload_from_address(
+        mut self,
+        address: u32,
+        length: usize,
+    ) -> Result<(Self, Vec<u8>), IO::Error> {
+        if !matches!(self.io.protocol(), DfuProtocol::Dfuse { .. }) {
+            return Err(Error::UnknownProtocol.into());
+        }
+
+        let mut command = [0; 5];
+        command[0] = STM32_DFU_CMD_SET_ADDRESS;
+        command[1..].copy_from_slice(&address.to_le_bytes());
+        self.io
+            .write_control(REQUEST_TYPE, DFU_DNLOAD, 0, &command)?;
+        self.wait_for_download_idle()?;
+        self.io.write_control(REQUEST_TYPE, DFU_ABORT, 0, &[])?;
+
+        let transfer_size = self.io.functional_descriptor().transfer_size as usize;
+        let mut readback = Vec::with_capacity(length);
+        let mut block = STM32_DFU_FIRST_DATA_BLOCK;
+        while readback.len() < length {
+            let remaining = length - readback.len();
+            let mut buffer = vec![0; transfer_size];
+            let received = self
+                .io
+                .read_control(REQUEST_TYPE, DFU_UPLOAD, block, &mut buffer)?;
+            if received == 0 {
+                return Err(Error::NoSpaceLeft.into());
+            }
+            let length = received.min(buffer.len()).min(remaining);
+            readback.extend_from_slice(&buffer[..length]);
+            block = block.checked_add(1).ok_or(Error::OutOfCapabilities)?;
+        }
+
+        self.io.write_control(REQUEST_TYPE, DFU_ABORT, 0, &[])?;
+        Ok((self, readback))
+    }
+
+    fn wait_for_download_idle(&mut self) -> Result<(), IO::Error> {
+        loop {
+            let received =
+                self.io
+                    .read_control(REQUEST_TYPE, DFU_GETSTATUS, 0, &mut self.buffer)?;
+            if received < 6 {
+                return Err(Error::ResponseTooShort {
+                    got: received,
+                    expected: 6,
+                }
+                .into());
+            }
+            let status = Status::from(self.buffer[0]);
+            if status != Status::Ok {
+                return Err(Error::StatusError(status).into());
+            }
+            let state = State::from(self.buffer[4]);
+            match state {
+                State::DfuDnloadIdle => return Ok(()),
+                State::DfuDnloadSync | State::DfuDnbusy => {
+                    let timeout = u64::from(self.buffer[1])
+                        | (u64::from(self.buffer[2]) << 8)
+                        | (u64::from(self.buffer[3]) << 16);
+                    std::thread::sleep(std::time::Duration::from_millis(timeout));
+                }
+                state => {
+                    return Err(Error::InvalidState {
+                        got: state,
+                        expected: State::DfuDnbusy,
+                    }
+                    .into());
+                }
+            }
+        }
     }
 
     /// Send a Detach request to the device

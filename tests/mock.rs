@@ -112,6 +112,7 @@ struct MockIOInner {
     busy: u16,
     was_reset: bool,
     saw_incomplete_write: bool,
+    upload: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +129,7 @@ impl MockIOData {
             busy: 0,
             was_reset: false,
             saw_incomplete_write: false,
+            upload: (0..128).collect(),
         })))
     }
 
@@ -346,6 +348,14 @@ impl DfuIo for MockIO {
         assert_eq!(request_type, REQUEST_TYPE);
         let request = Request::from_u8(request).expect("Unknown request");
         match (request, self.state()) {
+            (Request::DFU_UPLOAD, State::DfuIdle | State::DfuUploadIdle) => {
+                let offset = usize::from(value.saturating_sub(2)) * buffer.len();
+                let source = self.inner().upload[offset..].to_vec();
+                let length = source.len().min(buffer.len());
+                buffer[..length].copy_from_slice(&source[..length]);
+                self.update_state(State::DfuUploadIdle);
+                Ok(length)
+            }
             (Request::DFU_GETSTATUS, State::DfuDnloadSync) => {
                 if self.still_busy() {
                     self.status_request(buffer, State::DfuDnbusy)
@@ -386,6 +396,10 @@ impl DfuIo for MockIO {
         assert_eq!(request_type, REQUEST_TYPE);
         let request = Request::from_u8(request).expect("Unknown request");
         match (request, self.state()) {
+            (Request::DFU_ABORT, _) => {
+                self.update_state(State::DfuIdle);
+                Ok(buffer.len())
+            }
             (Request::DFU_DNLOAD, State::DfuIdle | State::DfuDnloadIdle) => {
                 if buffer.is_empty() {
                     assert_eq!(self.state(), State::DfuDnloadIdle);
