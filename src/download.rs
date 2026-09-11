@@ -257,6 +257,17 @@ pub struct DownloadChunk<'dfu> {
 }
 
 impl<'dfu> DownloadChunk<'dfu> {
+    pub(crate) fn defer_manifestation(self) -> Manifestation {
+        Manifestation {
+            descriptor: *self.descriptor,
+            block_num: self.block_num,
+            address: match self.protocol {
+                ProtocolData::Dfu => None,
+                ProtocolData::Dfuse(data) => Some(data.address),
+            },
+        }
+    }
+
     /// Download a chunk of data into the device.
     pub fn download<'data>(
         self,
@@ -313,6 +324,37 @@ impl<'dfu> DownloadChunk<'dfu> {
         };
 
         Ok((next, control))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Manifestation {
+    descriptor: FunctionalDescriptor,
+    pub(crate) block_num: u16,
+    pub(crate) address: Option<u32>,
+}
+
+impl Manifestation {
+    // block_num is the caller's choice: the running self.block_num, unless the DfuSe address
+    // pointer was restored since the last chunk, in which case it must be the first-data-block
+    // value (2) that a command block resets the sequence to.
+    pub(crate) fn start(
+        self,
+        block_num: u16,
+    ) -> (get_status::WaitState<Self>, UsbWriteControl<[u8; 0]>) {
+        let next_state = if self.descriptor.manifestation_tolerant {
+            State::DfuIdle
+        } else {
+            State::DfuManifest
+        };
+        let next = get_status::WaitState::new(State::DfuManifest, next_state, self);
+        let control = UsbWriteControl::new(REQUEST_TYPE, DFU_DNLOAD, block_num, []);
+
+        (next, control)
+    }
+
+    pub(crate) fn requires_usb_reset(self) -> bool {
+        !self.descriptor.manifestation_tolerant && !self.descriptor.will_detach
     }
 }
 

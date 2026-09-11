@@ -60,6 +60,7 @@ where
     dfu: DfuSansIo,
     buffer: Vec<u8>,
     progress: Option<Box<dyn FnMut(usize)>>,
+    pending_manifestation: Option<download::Manifestation>,
 }
 
 impl<IO, E> DfuSync<IO, E>
@@ -77,6 +78,7 @@ where
             dfu: DfuSansIo::new(descriptor),
             buffer: vec![0x00; transfer_size],
             progress: None,
+            pending_manifestation: None,
         }
     }
 
@@ -123,9 +125,106 @@ where
     /// Returns `Some(Self)` if the device stayed on the bus (manifestation tolerant, no USB reset
     /// occurred) or `None` if a USB reset was performed.
     pub fn download<R: std::io::Read>(
+        self,
+        reader: R,
+        length: u32,
+    ) -> Result<Option<Self>, IO::Error> {
+        self.download_inner(reader, length, true)
+    }
+
+    /// Download firmware without starting manifestation.
+    ///
+    /// This leaves the device in DFU download-idle so a DfuSe readback can verify the programmed
+    /// bytes. Call [`Self::manifest`] once verification succeeds.
+    pub fn download_without_manifest_from_slice(self, slice: &[u8]) -> Result<Self, IO::Error> {
+        let length = u32::try_from(slice.len()).map_err(|_| Error::OutOfCapabilities)?;
+        self.download_without_manifest(Cursor::new(slice), length)
+    }
+
+    /// Download firmware from a reader without starting manifestation.
+    ///
+    /// This leaves the device in DFU download-idle so a DfuSe readback can verify the programmed
+    /// bytes. Call [`Self::manifest`] once verification succeeds.
+    pub fn download_without_manifest<R: std::io::Read>(
+        self,
+        reader: R,
+        length: u32,
+    ) -> Result<Self, IO::Error> {
+        Ok(self.download_inner(reader, length, false)?.expect(
+            "download_inner only resets the bus by sending the final chunk, which manifest=false \
+             never does",
+        ))
+    }
+
+    /// Complete a deferred manifestation.
+    ///
+    /// This must follow [`Self::download_without_manifest`] or
+    /// [`Self::download_without_manifest_from_slice`]. It sends the final zero-length download
+    /// block and performs a USB reset when the device requires one.
+    ///
+    /// For DfuSe devices this restores the address pointer first: any DfuSe operation performed
+    /// in between (such as [`Self::upload_from_address`]) moves the device's address pointer and
+    /// leaves it outside the `dfuDNLOAD-IDLE` state that a manifestation must be requested from.
+    pub fn manifest(mut self) -> Result<Option<Self>, IO::Error> {
+        let manifestation = self
+            .pending_manifestation
+            .take()
+            .ok_or(Error::InvalidState {
+                got: State::DfuIdle,
+                expected: State::DfuDnloadIdle,
+            })?;
+
+        macro_rules! wait_status {
+            ($cmd:expr) => {{
+                let mut cmd = $cmd;
+                loop {
+                    cmd = match cmd.next() {
+                        get_status::Step::Break(cmd) => break cmd,
+                        get_status::Step::Wait(cmd, poll_timeout) => {
+                            std::thread::sleep(std::time::Duration::from_millis(poll_timeout));
+                            let (cmd, mut control) = cmd.get_status(&mut self.buffer);
+                            let n = control.execute(&self.io)?;
+                            cmd.chain(&self.buffer[..n as usize])??
+                        }
+                    };
+                }
+            }};
+        }
+
+        let block_num = if let Some(address) = manifestation.address {
+            self.restore_dfuse_address(address)?;
+            STM32_DFU_FIRST_DATA_BLOCK
+        } else {
+            manifestation.block_num
+        };
+
+        let (cmd, control) = manifestation.start(block_num);
+        control.execute(&self.io)?;
+        let manifestation = wait_status!(cmd);
+        if manifestation.requires_usb_reset() {
+            self.io.usb_reset()?;
+            Ok(None)
+        } else {
+            Ok(Some(self))
+        }
+    }
+
+    // Sets the DfuSe address pointer and waits for dfuDNLOAD-IDLE. Being a command block, this
+    // resets the block-number sequence, so the next DNLOAD must use STM32_DFU_FIRST_DATA_BLOCK.
+    fn restore_dfuse_address(&mut self, address: u32) -> Result<(), IO::Error> {
+        let mut command = [0; 5];
+        command[0] = STM32_DFU_CMD_SET_ADDRESS;
+        command[1..].copy_from_slice(&address.to_le_bytes());
+        self.io
+            .write_control(REQUEST_TYPE, DFU_DNLOAD, 0, &command)?;
+        self.wait_for_download_idle()
+    }
+
+    fn download_inner<R: std::io::Read>(
         mut self,
         reader: R,
         length: u32,
+        manifest: bool,
     ) -> Result<Option<Self>, IO::Error> {
         let transfer_size = self.io.functional_descriptor().transfer_size as usize;
         let mut reader = Buffer::new(transfer_size, reader);
@@ -177,6 +276,10 @@ where
                 }
                 download::Step::DownloadChunk(cmd) => {
                     let chunk = reader.fill_buf()?;
+                    if chunk.is_empty() && !manifest {
+                        self.pending_manifestation = Some(cmd.defer_manifestation());
+                        break Ok(Some(self));
+                    }
                     let (cmd, control) = cmd.download(chunk)?;
                     let n = control.execute(&self.io)?;
                     reader.consume(n);
@@ -221,12 +324,7 @@ where
             return Err(Error::UnknownProtocol.into());
         }
 
-        let mut command = [0; 5];
-        command[0] = STM32_DFU_CMD_SET_ADDRESS;
-        command[1..].copy_from_slice(&address.to_le_bytes());
-        self.io
-            .write_control(REQUEST_TYPE, DFU_DNLOAD, 0, &command)?;
-        self.wait_for_download_idle()?;
+        self.restore_dfuse_address(address)?;
         self.io.write_control(REQUEST_TYPE, DFU_ABORT, 0, &[])?;
 
         let transfer_size = self.io.functional_descriptor().transfer_size as usize;

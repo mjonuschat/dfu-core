@@ -111,8 +111,10 @@ struct MockIOInner {
     erased: Vec<(u32, u32)>,
     busy: u16,
     was_reset: bool,
+    manifested: bool,
     saw_incomplete_write: bool,
     upload: Vec<u8>,
+    address_pointer: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -128,8 +130,10 @@ impl MockIOData {
             erased: Vec::new(),
             busy: 0,
             was_reset: false,
+            manifested: false,
             saw_incomplete_write: false,
             upload: (0..128).collect(),
+            address_pointer: 0,
         })))
     }
 
@@ -139,6 +143,10 @@ impl MockIOData {
 
     pub fn was_reset(&self) -> bool {
         self.inner().was_reset
+    }
+
+    pub fn manifested(&self) -> bool {
+        self.inner().manifested
     }
 
     pub fn completed(&self) -> bool {
@@ -198,6 +206,14 @@ impl MockIO {
 
     fn write_window_base(&self) -> u32 {
         self.address.unwrap_or(self.layout_address)
+    }
+
+    fn address_pointer(&self) -> u32 {
+        self.inner().address_pointer
+    }
+
+    fn set_address_pointer(&self, address: u32) {
+        self.inner().address_pointer = address;
     }
 
     fn erase_page(&self, address: u32) {
@@ -289,12 +305,15 @@ impl MockIO {
         match blocknum {
             0 => match buffer[0] {
                 0x21 => {
-                    // set address
-                    let addr = buffer[1..].as_ref().get_u32_le();
-                    let addr = addr
+                    let raw_addr = buffer[1..].as_ref().get_u32_le();
+                    let addr = raw_addr
                         .checked_sub(self.write_window_base())
                         .expect("Invalid download address");
-                    assert_eq!(addr, self.inner().download.len() as u32);
+                    assert!(
+                        addr == 0 || addr == self.inner().download.len() as u32,
+                        "DfuSe address must begin an upload or continue a download"
+                    );
+                    self.set_address_pointer(raw_addr);
                 }
                 0x41 => {
                     // erase page
@@ -359,7 +378,8 @@ impl DfuIo for MockIO {
         let request = Request::from_u8(request).expect("Unknown request");
         match (request, self.state()) {
             (Request::DFU_UPLOAD, State::DfuIdle | State::DfuUploadIdle) => {
-                let offset = usize::from(value.saturating_sub(2)) * buffer.len();
+                let base = self.physical_offset(self.address_pointer()) as usize;
+                let offset = base + usize::from(value.saturating_sub(2)) * buffer.len();
                 let source = self.inner().upload[offset..].to_vec();
                 let length = source.len().min(buffer.len());
                 buffer[..length].copy_from_slice(&source[..length]);
@@ -412,8 +432,14 @@ impl DfuIo for MockIO {
             }
             (Request::DFU_DNLOAD, State::DfuIdle | State::DfuDnloadIdle) => {
                 if buffer.is_empty() {
-                    assert_eq!(self.state(), State::DfuDnloadIdle);
+                    assert_eq!(
+                        self.state(),
+                        State::DfuDnloadIdle,
+                        "manifestation must be requested from dfuDNLOAD-IDLE, restore the \
+                         DfuSe address pointer first if anything else ran since the last chunk"
+                    );
                     self.busy_cycles(3);
+                    self.inner().manifested = true;
                     self.update_state(State::DfuManifestSync);
                 } else {
                     self.update_state(State::DfuDnloadSync);

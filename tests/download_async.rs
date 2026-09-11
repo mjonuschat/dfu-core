@@ -86,6 +86,7 @@ async fn test_simple_download(mock: MockIO) {
     );
     assert_eq!(mock_data.was_reset(), dfu.is_none());
     assert!(mock_data.completed());
+    assert!(mock_data.manifested());
     assert_eq!(firmware, mock_data.downloaded().as_slice());
 }
 
