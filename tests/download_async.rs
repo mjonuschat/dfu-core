@@ -199,7 +199,8 @@ async fn will_detach_and_manifestation_toleration_dfuse() {
 async fn override_address_dfuse() {
     setup();
     let mock = mock::MockIOBuilder::default()
-        .address(0x08004000)
+        .layout_address(0x0800_0000)
+        .address(0x0800_0040)
         .dfuse(true)
         .build();
     test_simple_download(mock).await;

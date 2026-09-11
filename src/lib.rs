@@ -154,6 +154,29 @@ impl DfuProtocol<memory_layout::MemoryLayout> {
     }
 }
 
+fn dfuse_layout_at_address(
+    layout_address: u32,
+    layout: &memory_layout::mem,
+    address: u32,
+) -> Result<(u32, &memory_layout::mem), Error> {
+    if address < layout_address {
+        return Err(Error::NoSpaceLeft);
+    }
+
+    let mut sector_address = layout_address;
+    for (index, page_size) in layout.iter().enumerate() {
+        let sector_end = sector_address
+            .checked_add(*page_size)
+            .ok_or(Error::EraseLimitReached)?;
+        if address < sector_end {
+            return Ok((sector_address, &layout[index..]));
+        }
+        sector_address = sector_end;
+    }
+
+    Err(Error::NoSpaceLeft)
+}
+
 /// Use this struct to create state machines to make operations on the device.
 pub struct DfuSansIo {
     descriptor: FunctionalDescriptor,
@@ -184,17 +207,19 @@ impl DfuSansIo {
         let (protocol, end_pos) = match protocol {
             DfuProtocol::Dfu => (download::ProtocolData::Dfu, length),
             DfuProtocol::Dfuse {
-                address,
+                address: layout_address,
                 memory_layout,
                 ..
             } => {
-                let address = self.override_address.unwrap_or(*address);
+                let address = self.override_address.unwrap_or(*layout_address);
+                let (erased_pos, memory_layout) =
+                    dfuse_layout_at_address(*layout_address, memory_layout.as_ref(), address)?;
                 (
                     download::ProtocolData::Dfuse(download::DfuseProtocolData {
                         address,
-                        erased_pos: address,
+                        erased_pos,
                         address_set: false,
-                        memory_layout: memory_layout.as_ref(),
+                        memory_layout,
                     }),
                     address.checked_add(length).ok_or(Error::NoSpaceLeft)?,
                 )
@@ -477,4 +502,33 @@ mod tests {
     // ensure DfuIo can be made into an object
     const _: [&dyn DfuIo<Read = (), Write = (), Reset = (), MemoryLayout = (), Error = Error>; 0] =
         [];
+
+    #[test]
+    fn dfuse_layout_starts_at_the_sector_containing_override_address() {
+        let layout = [
+            16 * 1024,
+            16 * 1024,
+            16 * 1024,
+            16 * 1024,
+            64 * 1024,
+            128 * 1024,
+        ];
+
+        let (erase_address, remaining) = dfuse_layout_at_address(0x0800_0000, &layout, 0x0802_0000)
+            .expect("override address should be in the layout");
+
+        assert_eq!(erase_address, 0x0802_0000);
+        assert_eq!(remaining, &[128 * 1024]);
+    }
+
+    #[test]
+    fn dfuse_layout_erases_the_containing_sector_for_unaligned_override_address() {
+        let layout = [16 * 1024, 64 * 1024, 128 * 1024];
+
+        let (erase_address, remaining) = dfuse_layout_at_address(0x0800_0000, &layout, 0x0801_5000)
+            .expect("override address should be in the layout");
+
+        assert_eq!(erase_address, 0x0801_4000);
+        assert_eq!(remaining, &[128 * 1024]);
+    }
 }
