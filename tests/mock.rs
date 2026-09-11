@@ -35,6 +35,7 @@ pub struct MockIOBuilder {
     will_detach: bool,
     // STM dfu extensions (dfuse)
     dfuse: bool,
+    layout_address: u32,
     address: Option<u32>,
 }
 
@@ -54,6 +55,11 @@ impl MockIOBuilder {
         self
     }
 
+    pub fn layout_address(mut self, address: u32) -> Self {
+        self.layout_address = address;
+        self
+    }
+
     pub fn address(mut self, address: u32) -> Self {
         self.address = Some(address);
         self
@@ -66,7 +72,7 @@ impl MockIOBuilder {
             (
                 (0x1, 0x1a),
                 DfuProtocol::Dfuse {
-                    address: 0x0,
+                    address: self.layout_address,
                     // 16 pages of 4 bytes; 8 pages of 8 bytes;
                     memory_layout: MemoryLayout::try_from("16*4 g,8*8 g").unwrap(),
                 },
@@ -90,6 +96,7 @@ impl MockIOBuilder {
             functional_descriptor,
             protocol,
             data,
+            layout_address: self.layout_address,
             address,
         }
     }
@@ -148,6 +155,7 @@ pub struct MockIO {
     functional_descriptor: FunctionalDescriptor,
     protocol: DfuProtocol<MemoryLayout>,
     data: MockIOData,
+    layout_address: u32,
     address: Option<u32>,
 }
 
@@ -157,7 +165,14 @@ impl MockIO {
             DfuProtocol::Dfu => 128,
             DfuProtocol::Dfuse {
                 ref memory_layout, ..
-            } => memory_layout.iter().sum(),
+            } => {
+                let offset = self.physical_offset(self.write_window_base());
+                memory_layout
+                    .iter()
+                    .sum::<u32>()
+                    .checked_sub(offset)
+                    .expect("Override address is outside the mock memory layout")
+            }
         }
     }
 
@@ -173,6 +188,16 @@ impl MockIO {
         self.data.clone()
     }
 
+    fn physical_offset(&self, address: u32) -> u32 {
+        address
+            .checked_sub(self.layout_address)
+            .expect("address is before the mock memory layout")
+    }
+
+    fn write_window_base(&self) -> u32 {
+        self.address.unwrap_or(self.layout_address)
+    }
+
     fn erase_page(&self, address: u32) {
         let m = match self.protocol {
             DfuProtocol::Dfu => unreachable!(),
@@ -181,7 +206,7 @@ impl MockIO {
             } => memory_layout,
         };
 
-        let mut offset = address;
+        let mut offset = self.physical_offset(address);
         let page_size = m
             .iter()
             .copied()
@@ -210,14 +235,6 @@ impl MockIO {
         self.inner().status
     }
 
-    fn translate_address(&self, address: u32) -> u32 {
-        if let Some(start) = self.address {
-            address.checked_sub(start).expect("Invalid address")
-        } else {
-            address
-        }
-    }
-
     fn status_request(&self, buffer: &mut [u8], state: State) -> Result<usize, Error> {
         buffer[0] = self.status().into(); // status ok
         (&mut buffer[1..]).put_uint_le(10, 3); // idle time
@@ -243,8 +260,13 @@ impl MockIO {
 
     fn check_erasures(&self, buffer: &[u8]) {
         let inner = self.inner();
-        let mut start = inner.download.len() as u32;
-        let end = start + buffer.len() as u32;
+        let mut start = self
+            .write_window_base()
+            .checked_add(inner.download.len() as u32)
+            .expect("Download position overflowed the address space");
+        let end = start
+            .checked_add(buffer.len() as u32)
+            .expect("Chunk end overflowed the address space");
         'l: loop {
             for e in &inner.erased {
                 if e.0 <= start && e.0 + e.1 > start {
@@ -267,13 +289,14 @@ impl MockIO {
                 0x21 => {
                     // set address
                     let addr = buffer[1..].as_ref().get_u32_le();
-                    let addr = self.translate_address(addr);
+                    let addr = addr
+                        .checked_sub(self.write_window_base())
+                        .expect("Invalid download address");
                     assert_eq!(addr, self.inner().download.len() as u32);
                 }
                 0x41 => {
                     // erase page
                     let addr = buffer[1..].as_ref().get_u32_le();
-                    let addr = self.translate_address(addr);
                     self.erase_page(addr);
                 }
                 cmd => todo!("Command not supported: {}", cmd),
