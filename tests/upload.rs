@@ -49,3 +49,48 @@ fn defers_manifestation_until_after_dfuse_readback() {
     assert!(data.completed());
     assert!(data.was_reset());
 }
+
+#[test]
+fn starts_manifestation_without_waiting_for_a_status_response() {
+    let mock = mock::MockIOBuilder::default().dfuse(true).build();
+    let data = mock.data();
+    let firmware = (0..17).collect::<Vec<u8>>();
+    let deferred = DfuSync::new(mock)
+        .download_without_manifest_from_slice(&firmware)
+        .expect("download succeeds without manifestation");
+
+    deferred
+        .manifest_without_wait()
+        .expect("final block is accepted");
+
+    assert!(data.manifested());
+    assert!(!data.was_reset());
+}
+
+#[test]
+fn restores_the_address_before_manifesting_without_wait_after_a_readback() {
+    let mock = mock::MockIOBuilder::default()
+        .address(64)
+        .dfuse(true)
+        .build();
+    let data = mock.data();
+    let firmware = (0..17).collect::<Vec<u8>>();
+    let mut dfu = DfuSync::new(mock);
+    dfu.override_address(64);
+
+    let deferred = dfu
+        .download_without_manifest_from_slice(&firmware)
+        .expect("download succeeds without manifestation");
+
+    let (deferred, readback) = deferred
+        .upload_from_address(64, 17)
+        .expect("readback succeeds before manifestation");
+    assert_eq!(readback, (64..81).collect::<Vec<u8>>());
+    assert!(!data.manifested());
+
+    deferred
+        .manifest_without_wait()
+        .expect("final block is accepted");
+
+    assert!(data.manifested());
+}

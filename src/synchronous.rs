@@ -209,6 +209,39 @@ where
         }
     }
 
+    /// Start a deferred manifestation without waiting for a status response.
+    ///
+    /// This is for DFU devices that disconnect immediately after accepting the final zero-length
+    /// download block. A transfer error is therefore indeterminate and is not returned; the caller
+    /// must observe the expected re-enumeration separately.
+    ///
+    /// For DfuSe devices this restores the address pointer first; see [`Self::manifest`].
+    pub fn manifest_without_wait(mut self) -> Result<IO, IO::Error> {
+        let manifestation = self
+            .pending_manifestation
+            .take()
+            .ok_or(Error::InvalidState {
+                got: State::DfuIdle,
+                expected: State::DfuDnloadIdle,
+            })?;
+        if let Some(address) = manifestation.address {
+            self.restore_dfuse_address(address)?;
+            let _ = self.io.write_control(
+                REQUEST_TYPE,
+                DFU_DNLOAD,
+                STM32_DFU_FIRST_DATA_BLOCK,
+                &[],
+            );
+            let _ = self
+                .io
+                .read_control(REQUEST_TYPE, DFU_GETSTATUS, 0, &mut self.buffer);
+        } else {
+            let (_cmd, control) = manifestation.start(manifestation.block_num);
+            let _ = control.execute(&self.io);
+        }
+        Ok(self.io)
+    }
+
     // Sets the DfuSe address pointer and waits for dfuDNLOAD-IDLE. Being a command block, this
     // resets the block-number sequence, so the next DNLOAD must use STM32_DFU_FIRST_DATA_BLOCK.
     fn restore_dfuse_address(&mut self, address: u32) -> Result<(), IO::Error> {
