@@ -226,16 +226,15 @@ where
             })?;
         if let Some(address) = manifestation.address {
             self.restore_dfuse_address(address)?;
-            let _ =
-                self.io
-                    .write_control(REQUEST_TYPE, DFU_DNLOAD, STM32_DFU_FIRST_DATA_BLOCK, &[]);
-            let _ = self
-                .io
-                .read_control(REQUEST_TYPE, DFU_GETSTATUS, 0, &mut self.buffer);
+            let (_, control) = manifestation.start(STM32_DFU_FIRST_DATA_BLOCK);
+            let _ = control.execute(&self.io);
         } else {
-            let (_cmd, control) = manifestation.start(manifestation.block_num);
+            let (_, control) = manifestation.start(manifestation.block_num);
             let _ = control.execute(&self.io);
         }
+        let _ = self
+            .io
+            .read_control(REQUEST_TYPE, DFU_GETSTATUS, 0, &mut self.buffer);
         Ok(self.io)
     }
 

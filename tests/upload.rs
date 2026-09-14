@@ -68,6 +68,22 @@ fn starts_manifestation_without_waiting_for_a_status_response() {
 }
 
 #[test]
+fn starts_plain_dfu_manifestation_without_waiting_for_a_status_response() {
+    let mock = mock::MockIOBuilder::default().build();
+    let data = mock.data();
+    let deferred = DfuSync::new(mock)
+        .download_without_manifest_from_slice(&[1, 2, 3])
+        .expect("download succeeds without manifestation");
+
+    deferred
+        .manifest_without_wait()
+        .expect("final block is accepted");
+
+    assert!(data.manifested());
+    assert!(data.completed());
+}
+
+#[test]
 fn restores_the_address_before_manifesting_without_wait_after_a_readback() {
     let mock = mock::MockIOBuilder::default()
         .address(64)
