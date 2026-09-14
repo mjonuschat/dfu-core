@@ -82,27 +82,29 @@ pub struct ClearStatus<T> {
 
 impl<T> ChainedCommand for ClearStatus<T> {
     type Arg = get_status::GetStatusMessage;
-    type Into = (T, Option<UsbWriteControl<[u8; 0]>>);
+    type Into = Result<(T, Option<UsbWriteControl<[u8; 0]>>), Error>;
 
     /// Clear the status of the device.
     fn chain(
         self,
         get_status::GetStatusMessage {
-            status: _,
+            status,
             poll_timeout: _,
             state,
             index: _,
         }: Self::Arg,
-    ) -> (T, Option<UsbWriteControl<[u8; 0]>>) {
+    ) -> Result<(T, Option<UsbWriteControl<[u8; 0]>>), Error> {
         let next = self.chained_command;
         if state == State::DfuError {
             log::trace!("Device is in error state, clearing status...");
             let control = UsbWriteControl::new(REQUEST_TYPE, DFU_CLRSTATUS, 0, []);
 
-            (next, Some(control))
+            Ok((next, Some(control)))
+        } else if status != Status::Ok {
+            Err(Error::StatusError(status))
         } else {
             log::trace!("Device is not in error state, skip clearing status");
-            (next, None)
+            Ok((next, None))
         }
     }
 }
@@ -167,13 +169,16 @@ impl<T> ChainedCommand for WaitState<T> {
     fn chain(
         self,
         GetStatusMessage {
-            status: _,
+            status,
             poll_timeout,
             state,
             index: _,
         }: Self::Arg,
     ) -> Self::Into {
         log::trace!("Device state: {:?}", state);
+        if status != Status::Ok {
+            return Err(Error::StatusError(status));
+        }
         if state == self.state || state == self.intermediate {
             Ok(WaitState {
                 chained_command: self.chained_command,

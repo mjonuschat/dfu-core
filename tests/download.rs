@@ -1,4 +1,4 @@
-use dfu_core::DfuIo;
+use dfu_core::{DfuIo, Status};
 use mock::MockIO;
 
 mod mock;
@@ -178,4 +178,22 @@ fn override_address_dfuse() {
         .dfuse(true)
         .build();
     test_simple_download(mock);
+}
+
+#[test]
+fn rejects_a_device_status_error_before_downloading() {
+    setup();
+    let mock = mock::MockIOBuilder::default().build();
+    let data = mock.data();
+    data.set_status(Status::ErrWrite);
+
+    let error = match dfu_core::synchronous::DfuSync::new(mock).download_from_slice(&[1, 2, 3]) {
+        Ok(_) => panic!("DFU status errors must abort a download"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        mock::Error::Dfu(dfu_core::Error::StatusError(Status::ErrWrite))
+    ));
 }

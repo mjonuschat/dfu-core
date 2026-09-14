@@ -226,12 +226,9 @@ where
             })?;
         if let Some(address) = manifestation.address {
             self.restore_dfuse_address(address)?;
-            let _ = self.io.write_control(
-                REQUEST_TYPE,
-                DFU_DNLOAD,
-                STM32_DFU_FIRST_DATA_BLOCK,
-                &[],
-            );
+            let _ =
+                self.io
+                    .write_control(REQUEST_TYPE, DFU_DNLOAD, STM32_DFU_FIRST_DATA_BLOCK, &[]);
             let _ = self
                 .io
                 .read_control(REQUEST_TYPE, DFU_GETSTATUS, 0, &mut self.buffer);
@@ -286,7 +283,7 @@ where
         let cmd = self.dfu.download(self.io.protocol(), length)?;
         let (cmd, mut control) = cmd.get_status(&mut self.buffer);
         let n = control.execute(&self.io)?;
-        let (cmd, control) = cmd.chain(&self.buffer[..n])?;
+        let (cmd, control) = cmd.chain(&self.buffer[..n])??;
         if let Some(control) = control {
             control.execute(&self.io)?;
         }

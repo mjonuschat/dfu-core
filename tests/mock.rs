@@ -145,6 +145,10 @@ impl MockIOData {
         self.inner().was_reset
     }
 
+    pub fn set_status(&self, status: Status) {
+        self.inner().status = status;
+    }
+
     pub fn manifested(&self) -> bool {
         self.inner().manifested
     }

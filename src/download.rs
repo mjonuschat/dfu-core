@@ -20,13 +20,16 @@ impl<'dfu> ChainedCommand for Start<'dfu> {
     fn chain(
         self,
         get_status::GetStatusMessage {
-            status: _,
+            status,
             poll_timeout: _,
             state,
             index: _,
         }: Self::Arg,
     ) -> Self::Into {
         log::trace!("Starting download process");
+        if status != Status::Ok {
+            return Err(Error::StatusError(status));
+        }
         // TODO startup can be in AppIdle in which case the Detach-Attach process needs to be done
         if state == State::DfuIdle {
             let (block_num, copied_pos) = match self.protocol {

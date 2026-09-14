@@ -219,7 +219,7 @@ where
         let cmd = self.dfu.download(self.io.protocol(), length)?;
         let (cmd, mut control) = cmd.get_status(&mut self.buffer);
         let n = control.execute_async(&self.io).await?;
-        let (cmd, control) = cmd.chain(&self.buffer[..n])?;
+        let (cmd, control) = cmd.chain(&self.buffer[..n])??;
         if let Some(control) = control {
             control.execute_async(&self.io).await?;
         }
