@@ -57,6 +57,8 @@ pub enum Error {
     UnrecognizedStateCode(u8),
     /// Device response is too short (got: {got:?}, expected: {expected:?}).
     ResponseTooShort { got: usize, expected: usize },
+    /// Input length differs from the declared download length (got: {got:?}, expected: {expected:?}).
+    InputLengthMismatch { got: usize, expected: usize },
     /// Device status is in error: {0}
     StatusError(Status),
     /// Device state is in error: {0}

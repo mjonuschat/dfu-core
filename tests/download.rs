@@ -197,3 +197,22 @@ fn rejects_a_device_status_error_before_downloading() {
         mock::Error::Dfu(dfu_core::Error::StatusError(Status::ErrWrite))
     ));
 }
+
+#[test]
+fn rejects_input_longer_than_the_declared_length() {
+    setup();
+    let error = match dfu_core::synchronous::DfuSync::new(mock::MockIOBuilder::default().build())
+        .download(std::io::Cursor::new([1, 2, 3, 4]), 3)
+    {
+        Ok(_) => panic!("input longer than its declared length must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        mock::Error::Dfu(dfu_core::Error::InputLengthMismatch {
+            got: 4,
+            expected: 3
+        })
+    ));
+}

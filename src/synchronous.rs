@@ -258,10 +258,8 @@ where
     ) -> Result<Option<Self>, IO::Error> {
         let transfer_size = self.io.functional_descriptor().transfer_size as usize;
         let mut reader = Buffer::new(transfer_size, reader);
-        let buffer = reader.fill_buf()?;
-        if buffer.is_empty() {
-            return Ok(Some(self));
-        }
+        let expected = usize::try_from(length).map_err(|_| Error::OutOfCapabilities)?;
+        let mut remaining = expected;
 
         macro_rules! wait_status {
             ($cmd:expr) => {{
@@ -306,6 +304,20 @@ where
                 }
                 download::Step::DownloadChunk(cmd) => {
                     let chunk = reader.fill_buf()?;
+                    if chunk.len() > remaining {
+                        return Err(Error::InputLengthMismatch {
+                            got: expected - remaining + chunk.len(),
+                            expected,
+                        }
+                        .into());
+                    }
+                    if chunk.is_empty() && remaining != 0 {
+                        return Err(Error::InputLengthMismatch {
+                            got: expected - remaining,
+                            expected,
+                        }
+                        .into());
+                    }
                     if chunk.is_empty() && !manifest {
                         self.pending_manifestation = Some(cmd.defer_manifestation());
                         break Ok(Some(self));
@@ -313,6 +325,7 @@ where
                     let (cmd, control) = cmd.download(chunk)?;
                     let n = control.execute(&self.io)?;
                     reader.consume(n);
+                    remaining -= n;
                     if let Some(progress) = self.progress.as_mut() {
                         progress(n);
                     }
