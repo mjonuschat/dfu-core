@@ -35,6 +35,7 @@ pub struct MockIOBuilder {
     will_detach: bool,
     // STM dfu extensions (dfuse)
     dfuse: bool,
+    can_upload: bool,
     layout_address: u32,
     address: Option<u32>,
 }
@@ -52,6 +53,11 @@ impl MockIOBuilder {
 
     pub fn dfuse(mut self, dfuse: bool) -> Self {
         self.dfuse = dfuse;
+        self
+    }
+
+    pub fn can_upload(mut self, can_upload: bool) -> Self {
+        self.can_upload = can_upload;
         self
     }
 
@@ -81,7 +87,7 @@ impl MockIOBuilder {
 
         let functional_descriptor = FunctionalDescriptor {
             can_download: true,
-            can_upload: false,
+            can_upload: self.can_upload,
             manifestation_tolerant: self.manifestation_tolerant,
             will_detach: self.will_detach,
             detach_timeout: 8,

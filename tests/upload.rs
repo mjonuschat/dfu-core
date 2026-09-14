@@ -9,6 +9,7 @@ fn reads_back_dfuse_firmware_from_an_overridden_address() {
     let mock = mock::MockIOBuilder::default()
         .address(64)
         .dfuse(true)
+        .can_upload(true)
         .build();
     let mut dfu = DfuSync::new(mock);
     dfu.override_address(64);
@@ -23,6 +24,7 @@ fn defers_manifestation_until_after_dfuse_readback() {
     let mock = mock::MockIOBuilder::default()
         .address(64)
         .dfuse(true)
+        .can_upload(true)
         .build();
     let data = mock.data();
     let firmware = (0..17).collect::<Vec<u8>>();
@@ -88,6 +90,7 @@ fn restores_the_address_before_manifesting_without_wait_after_a_readback() {
     let mock = mock::MockIOBuilder::default()
         .address(64)
         .dfuse(true)
+        .can_upload(true)
         .build();
     let data = mock.data();
     let firmware = (0..17).collect::<Vec<u8>>();
@@ -109,4 +112,18 @@ fn restores_the_address_before_manifesting_without_wait_after_a_readback() {
         .expect("final block is accepted");
 
     assert!(data.manifested());
+}
+
+#[test]
+fn rejects_readback_when_the_device_does_not_support_upload() {
+    let mock = mock::MockIOBuilder::default().dfuse(true).build();
+    let error = match DfuSync::new(mock).upload_from_address(0, 1) {
+        Ok(_) => panic!("upload must require bitCanUpload"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        mock::Error::Dfu(dfu_core::Error::OutOfCapabilities)
+    ));
 }

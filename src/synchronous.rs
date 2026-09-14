@@ -365,6 +365,9 @@ where
         if !matches!(self.io.protocol(), DfuProtocol::Dfuse { .. }) {
             return Err(Error::UnknownProtocol.into());
         }
+        if !self.io.functional_descriptor().can_upload {
+            return Err(Error::OutOfCapabilities.into());
+        }
 
         self.restore_dfuse_address(address)?;
         self.io.write_control(REQUEST_TYPE, DFU_ABORT, 0, &[])?;
