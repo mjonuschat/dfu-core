@@ -381,11 +381,15 @@ where
             let received = self
                 .io
                 .read_control(REQUEST_TYPE, DFU_UPLOAD, block, &mut buffer)?;
-            if received == 0 {
-                return Err(Error::NoSpaceLeft.into());
+            let expected = remaining.min(buffer.len());
+            if received < expected {
+                return Err(Error::ResponseTooShort {
+                    got: received,
+                    expected,
+                }
+                .into());
             }
-            let length = received.min(buffer.len()).min(remaining);
-            readback.extend_from_slice(&buffer[..length]);
+            readback.extend_from_slice(&buffer[..expected]);
             block = block.checked_add(1).ok_or(Error::OutOfCapabilities)?;
         }
 

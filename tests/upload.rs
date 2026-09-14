@@ -127,3 +127,24 @@ fn rejects_readback_when_the_device_does_not_support_upload() {
         mock::Error::Dfu(dfu_core::Error::OutOfCapabilities)
     ));
 }
+
+#[test]
+fn rejects_a_short_upload_before_the_requested_range_is_complete() {
+    let mock = mock::MockIOBuilder::default()
+        .dfuse(true)
+        .address(126)
+        .can_upload(true)
+        .build();
+    let error = match DfuSync::new(mock).upload_from_address(126, 3) {
+        Ok(_) => panic!("a short upload must not be treated as continuation data"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        mock::Error::Dfu(dfu_core::Error::ResponseTooShort {
+            got: 2,
+            expected: 3
+        })
+    ));
+}
