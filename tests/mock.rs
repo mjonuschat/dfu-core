@@ -56,6 +56,7 @@ impl MockIOBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn can_upload(mut self, can_upload: bool) -> Self {
         self.can_upload = can_upload;
         self
@@ -151,6 +152,7 @@ impl MockIOData {
         self.inner().was_reset
     }
 
+    #[allow(dead_code)]
     pub fn set_status(&self, status: Status) {
         self.inner().status = status;
     }
