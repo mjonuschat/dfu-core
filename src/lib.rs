@@ -179,6 +179,12 @@ fn dfuse_layout_at_address(
     Err(Error::NoSpaceLeft)
 }
 
+fn dfuse_layout_end(layout_address: u32, layout: &memory_layout::mem) -> Result<u32, Error> {
+    layout.iter().try_fold(layout_address, |end, page_size| {
+        end.checked_add(*page_size).ok_or(Error::EraseLimitReached)
+    })
+}
+
 /// Use this struct to create state machines to make operations on the device.
 pub struct DfuSansIo {
     descriptor: FunctionalDescriptor,
@@ -214,6 +220,10 @@ impl DfuSansIo {
                 ..
             } => {
                 let address = self.override_address.unwrap_or(*layout_address);
+                let end_pos = address.checked_add(length).ok_or(Error::NoSpaceLeft)?;
+                if end_pos > dfuse_layout_end(*layout_address, memory_layout.as_ref())? {
+                    return Err(Error::NoSpaceLeft);
+                }
                 let (erased_pos, memory_layout) =
                     dfuse_layout_at_address(*layout_address, memory_layout.as_ref(), address)?;
                 (
@@ -223,7 +233,7 @@ impl DfuSansIo {
                         address_set: false,
                         memory_layout,
                     }),
-                    address.checked_add(length).ok_or(Error::NoSpaceLeft)?,
+                    end_pos,
                 )
             }
         };
@@ -565,6 +575,14 @@ mod tests {
             .expect_err("address past the end of the layout should be rejected");
 
         assert!(matches!(error, Error::NoSpaceLeft));
+    }
+
+    #[test]
+    fn dfuse_layout_rejects_a_range_past_the_layout() {
+        let layout = [16 * 1024, 64 * 1024];
+        let end = dfuse_layout_end(0x0800_0000, &layout).expect("layout does not overflow");
+
+        assert_eq!(end, 0x0801_4000);
     }
 
     #[test]
