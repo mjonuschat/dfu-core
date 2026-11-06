@@ -7,7 +7,7 @@ use thiserror::Error;
 #[cfg_attr(any(feature = "std", test), derive(Error))]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub enum Error {
-    /// The data is too short (got: {0}, expected: 9).
+    /// The data is too short (got: {0}, expected: at least 7).
     DataTooShort(usize),
 }
 
@@ -67,7 +67,7 @@ impl FunctionalDescriptor {
             return None;
         }
 
-        if len < 9 {
+        if len < 7 {
             return Some(Err(Error::DataTooShort(len)));
         }
 
@@ -79,9 +79,14 @@ impl FunctionalDescriptor {
 
         let detach_timeout = bytes.get_u16_le();
         let transfer_size = bytes.get_u16_le();
-        let minor = bytes.get_u8();
-        let major = bytes.get_u8();
-        let dfu_version = (major, minor);
+        // DFU 1.0 defines a 7-byte descriptor without bcdDFUVersion.
+        let dfu_version = if len >= 9 {
+            let minor = bytes.get_u8();
+            let major = bytes.get_u8();
+            (major, minor)
+        } else {
+            (0x1, 0x00)
+        };
 
         Some(Ok(Self {
             can_download,
@@ -92,5 +97,50 @@ impl FunctionalDescriptor {
             transfer_size,
             dfu_version,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_dfu_1_1_descriptor() {
+        let descriptor = FunctionalDescriptor::from_bytes(&[
+            0x09, 0x21, 0x0b, 0xff, 0x00, 0x00, 0x04, 0x10, 0x01,
+        ])
+        .unwrap()
+        .unwrap();
+
+        assert!(descriptor.can_download);
+        assert!(descriptor.can_upload);
+        assert!(!descriptor.manifestation_tolerant);
+        assert!(descriptor.will_detach);
+        assert_eq!(descriptor.detach_timeout, 0xff);
+        assert_eq!(descriptor.transfer_size, 0x400);
+        assert_eq!(descriptor.dfu_version, (0x1, 0x10));
+    }
+
+    #[test]
+    fn reads_a_dfu_1_0_descriptor_without_a_version() {
+        let descriptor =
+            FunctionalDescriptor::from_bytes(&[0x07, 0x21, 0x01, 0xe8, 0x03, 0x40, 0x00])
+                .unwrap()
+                .unwrap();
+
+        assert!(descriptor.can_download);
+        assert!(!descriptor.can_upload);
+        assert_eq!(descriptor.detach_timeout, 1000);
+        assert_eq!(descriptor.transfer_size, 64);
+        assert_eq!(descriptor.dfu_version, (0x1, 0x00));
+    }
+
+    #[test]
+    fn rejects_a_truncated_descriptor_and_ignores_other_types() {
+        assert!(matches!(
+            FunctionalDescriptor::from_bytes(&[0x06, 0x21, 0x01, 0xe8, 0x03, 0x40]),
+            Some(Err(Error::DataTooShort(6)))
+        ));
+        assert!(FunctionalDescriptor::from_bytes(&[0x09, 0x04, 0, 0, 0, 0, 0, 0, 0]).is_none());
     }
 }

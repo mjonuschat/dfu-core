@@ -133,7 +133,9 @@ impl DfuProtocol<memory_layout::MemoryLayout> {
     /// Create a DFU Protocol object from the interface string and DFU version
     pub fn new(interface_string: &str, version: (u8, u8)) -> Result<Self, Error> {
         match version {
-            (0x1, 0x10) => Ok(DfuProtocol::Dfu),
+            // DFU 1.0 devices (bcdDFUVersion 1.00, 1.01, or no version in a 7-byte functional
+            // descriptor) download the same way as DFU 1.1 ones.
+            (0x1, 0x00) | (0x1, 0x01) | (0x1, 0x10) => Ok(DfuProtocol::Dfu),
             (0x1, 0x1a) => {
                 let (rest, memory_layout) = interface_string
                     .rsplit_once('/')
@@ -514,6 +516,20 @@ mod tests {
     // ensure DfuIo can be made into an object
     const _: [&dyn DfuIo<Read = (), Write = (), Reset = (), MemoryLayout = (), Error = Error>; 0] =
         [];
+
+    #[test]
+    fn treats_dfu_1_0_devices_as_plain_dfu() {
+        for version in [(0x1, 0x00), (0x1, 0x01), (0x1, 0x10)] {
+            assert!(
+                matches!(DfuProtocol::new("", version), Ok(DfuProtocol::Dfu)),
+                "{version:?}"
+            );
+        }
+        assert!(matches!(
+            DfuProtocol::new("", (0x2, 0x00)),
+            Err(Error::UnknownProtocol)
+        ));
+    }
 
     #[test]
     fn dfuse_layout_starts_at_the_sector_containing_override_address() {
